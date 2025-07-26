@@ -1,4 +1,5 @@
 import argparse
+import math
 
 import sys
 import os
@@ -9,11 +10,20 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../infe
 
 from infer_utils import prepare_model
 
+import shutil
+import os
+
+def copy_and_replace_folder(src_dir, dest_dir):
+    if os.path.exists(dest_dir):
+        shutil.rmtree(dest_dir)  # Remove existing folder
+    shutil.copytree(src_dir, dest_dir)  # Copy fresh folder
+    print(f"✅ Copied '{src_dir}' to '{dest_dir}' (replaced if existed).")
+
 def save_all_models(cfm, tokenizer, muq, vae, device, save_dir="saved_models"):
     os.makedirs(save_dir, exist_ok=True)
 
     # Save CFM weights
-    torch.save(cfm.state_dict(), os.path.join(save_dir, "cfm_model_state.pt"))
+    torch.save(cfm, os.path.join(save_dir, "cfm_full.pt"))
 
     # Save tokenizer (optional, for completeness)
     with open(os.path.join(save_dir, "tokenizer.pkl"), "wb") as f:
@@ -34,7 +44,7 @@ if __name__ == "__main__":
         "--audio-length",
         type=int,
         default=95,
-        choices=[95, 285],
+        #choices=[95, 285],
         help="length of generated song",
     )  # length of target song
     parser.add_argument(
@@ -60,6 +70,8 @@ if __name__ == "__main__":
         max_frames = 2048
     elif audio_length == 285:  # current not available
         max_frames = 6144
+    else:
+        max_frames =  math.floor(2048/95 * audio_length)
 
     cfm, tokenizer, muq, vae = prepare_model(max_frames, device, repo_id=args.repo_id)
 

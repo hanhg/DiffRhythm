@@ -7,14 +7,40 @@ import os
 import argparse
 import time
 import random
+import math
 
 import torch
 import torchaudio
+
 from einops import rearrange
 
 sys.path.append(os.getcwd())
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from model import DiT, CFM
+from model.modules import (
+    TimestepEmbedding, 
+    SinusPositionEmbedding,
+    FiLMLayer,
+    MelSpec,
+    ConvPositionEmbedding,
+    GRN,
+    ConvNeXtV2Block,
+    AdaLayerNormZero,
+    AdaLayerNormZero_Final,
+    FeedForward,
+    Attention,
+    AttnProcessor,
+    JointAttnProcessor,
+    DiTBlock,
+    MMDiTBlock
+    ) 
+from model.dit import(
+    TextEmbedding,
+    InputEmbedding
+)
 from muq import MuQMuLan  # or correct import path for MuQ
+
+from torch.serialization import safe_globals
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../infer")))
 from infer_utils import (
@@ -28,11 +54,15 @@ from infer_utils import (
 )
 from infer import inference
 
+from model.trainer import Trainer
+
 print("Current working directory:", os.getcwd())
 
 def load_models(max_frames, device, save_dir="saved_models"):
     # === 1. Load CFM ===
     st = time.time()
+    '''
+    
     config_path = "./config/diffrhythm-1b.json"  # Same config used during saving
     with open(config_path) as f:
         model_config = json.load(f)
@@ -47,10 +77,78 @@ def load_models(max_frames, device, save_dir="saved_models"):
     cfm_weights_path = os.path.join(save_dir, "cfm_model_state.pt")
     cfm.load_state_dict(torch.load(cfm_weights_path, map_location=device))
     cfm.eval()
-    cfm = cfm.to(device).float()
-
+    cfm = cfm.to(device).half().eval()
+''' 
+    safe_classes = [CFM, DiT, TimestepEmbedding,
+                                            SinusPositionEmbedding,
+                                            FiLMLayer,
+                                            MelSpec,
+                                            ConvPositionEmbedding,
+                                            GRN,
+                                            ConvNeXtV2Block,
+                                            AdaLayerNormZero,
+                                            AdaLayerNormZero_Final,
+                                            FeedForward,
+                                            Attention,
+                                            AttnProcessor,
+                                            JointAttnProcessor,
+                                            DiTBlock,
+                                            MMDiTBlock,
+                                            torch.nn.modules.container.Sequential,CNENTokenizer,MuQMuLan,
+                                            torch.nn.modules.linear.Linear,
+                                            torch.nn.modules.activation.SiLU,
+                                            TextEmbedding,
+                                            InputEmbedding,
+                                            torch.nn.modules.sparse.Embedding,
+                                            torch.nn.modules.conv.Conv1d,
+                                            torch.nn.modules.normalization.LayerNorm,
+                                            torch.nn.modules.activation.GELU,
+                                            torch.nn.modules.activation.Mish,
+                                            torch.nn.modules.container.ModuleList,
+                                            Trainer, LlamaDecoderLayer]
+    
     et = time.time()
     print(f"Loading CFM Cost: {et-st}s")
+
+    try:
+        with safe_globals(safe_classes):
+            cfm = torch.load(os.path.join(save_dir, "cfm_full.pt"), map_location="cpu", weights_only=False)
+    except Exception as e:
+        print("\n❌ Still missing a class?")
+        print(e)
+    cfm = cfm.to(device).half().eval()
+    '''
+    with torch.serialization.safe_globals([CFM, DiT, TimestepEmbedding,
+                                            SinusPositionEmbedding,
+                                            FiLMLayer,
+                                            MelSpec,
+                                            ConvPositionEmbedding,
+                                            GRN,
+                                            ConvNeXtV2Block,
+                                            AdaLayerNormZero,
+                                            AdaLayerNormZero_Final,
+                                            FeedForward,
+                                            Attention,
+                                            AttnProcessor,
+                                            JointAttnProcessor,
+                                            DiTBlock,
+                                            MMDiTBlock,
+                                            torch.nn.modules.container.Sequential,CNENTokenizer,MuQMuLan,
+                                            torch.nn.modules.linear.Linear,
+                                            torch.nn.modules.activation.SiLU,
+                                            TextEmbedding,
+                                            InputEmbedding,
+                                            torch.nn.modules.sparse.Embedding,
+                                            torch.nn.modules.conv.Conv1d,
+                                            torch.nn.modules.normalization.LayerNorm,
+                                            torch.nn.modules.activation.GELU,
+                                            torch.nn.modules.activation.Mish,
+                                            torch.nn.modules.container.ModuleList
+                                            ]
+    ):
+        cfm = torch.load(os.path.join(save_dir, "cfm_full.pt"), map_location=device)
+    cfm = cfm.to(device).half().eval()'''
+
 
     # === 2. Load Tokenizer ===
     st = time.time()
@@ -104,7 +202,7 @@ if __name__ == "__main__":
         "--audio-length",
         type=int,
         default=95,
-        choices=[95, 285],
+        #choices=[95, 285],
         help="length of generated song",
     )  # length of target song
     parser.add_argument(
@@ -168,6 +266,8 @@ if __name__ == "__main__":
         max_frames = 2048
     elif audio_length == 285:  # current not available
         max_frames = 6144
+    else:
+        max_frames = math.floor(2048 / 95 * audio_length)
 
     cfm, tokenizer, muq, vae = load_models(max_frames, device, save_dir=args.model_dir)
 
@@ -177,7 +277,7 @@ if __name__ == "__main__":
     else:
         lrc = ""
     lrc_prompt, start_time = get_lrc_token(max_frames, lrc, tokenizer, device)
-    start_time = start_time.to(device).float()
+    start_time = start_time.to(device).half()
 
     if args.ref_audio_path:
         style_prompt = get_style_prompt(muq, args.ref_audio_path)
@@ -187,7 +287,7 @@ if __name__ == "__main__":
     negative_style_prompt = get_negative_style_prompt(device)
 
     latent_prompt, pred_frames = get_reference_latent(device, max_frames, args.edit, args.edit_segments, args.ref_song, vae)
-    latent_prompt = latent_prompt.to(device).float()
+    latent_prompt = latent_prompt.to(device).half()
 
     s_t = time.time()
     generated_songs = inference(
